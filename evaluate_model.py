@@ -1,110 +1,72 @@
 # TODO: check imports and function definitions to exclude the ones that are no longer relevant
 
 import argparse
-from config import IMG_HEIGHT, IMG_WIDTH, TrainValImages, TrainValMasks, TestImages, TestMasks
-
-parser = argparse.ArgumentParser(description='Run evaluation pipeline for specified model name')
-parser.add_argument('model_name', metavar='name', type=str, default="ResUnet",  # nargs='+',
-                    help='Name of the model to evaluate.')
-parser.add_argument('--out_folder', metavar='folder', type=str, default="results",
-                    help='Output folder')
-parser.add_argument('--batch_size', metavar='batch_size', type=int, default=2,
-                    help='Batch size for generator used for predictions')
-parser.add_argument('--mode', metavar='mode', type=str, default="eval",
-                    help="""Running mode. Valid values:
-                            - eval (default) --> optimise threshold (train_val folder, full size images)                            
-                            - test --> validate on test images (test folder, full size images)                     
-                            - test_code --> for testing changes in the code
-                            """)
-parser.add_argument('--threshold', metavar='threshold', type=str,  default='grid',
-                    help='Whether to use a threshold optimized on the validation set (`best` for argmax or `knee` for kneedle) or grid of values')
-args = parser.parse_args()
-
 from pathlib import Path
 
-# setup paths --> NOTE: CURRENT PATHS ARE TO BE UPDATED
-repo_path = Path("/storage/gpfs_maestro/hpc/user/rmorellihpc/cell_counting_yellow")
-# repo_path = Path("/home/luca/PycharmProjects/cell_counting_yellow")
-if args.mode == "eval":
-    IMG_PATH = Path(TrainValImages) #repo_path / "DATASET/train_val/full_size/all_images/images"
-    MASKS_PATH = Path(TrainValMasks)#repo_path / "DATASET/train_val/full_size/all_masks/masks"
-elif args.mode == "test":
-    IMG_PATH = Path(TestImages)#repo_path / "DATASET/test/all_images/all_images/images"
-    MASKS_PATH = Path(TestMasks)#repo_path / "DATASET/test/all_masks/all_masks/masks"
-else:
-    IMG_PATH = repo_path / "DATASET/test_tr_opt/sample_valid/all_images/images"
-    MASKS_PATH = repo_path / "DATASET/test_tr_opt/sample_valid/all_masks/masks"
+import cv2
+import keras.preprocessing
+import numpy as np
+from tqdm import tqdm
+
+import evaluation_utils
+
+parser = argparse.ArgumentParser(description='Run evaluation pipeline for specified model name')
+parser.add_argument('threshold', metavar='threshold', type=float, help='Threshold for filtering the predicted images')
+parser.add_argument('--model_name', metavar='name', type=str,
+                    help='Name of the model to evaluate.', default="model/c-ResUnet")
+parser.add_argument('--out_folder', metavar='out_folder', type=str, default="results",
+                    help='Output folder')
+parser.add_argument('--input_folder', metavar='input_folder', type=str, default="data",
+                    help='Output folder')
+parser.add_argument('--batch_size', metavar='batch_size', type=int, default=1,
+                    help='Batch size for generator used for predictions')
+args = parser.parse_args()
+
+root_path = Path("./")
+IMG_WIDTH = 1600  # 1400
+IMG_HEIGHT = 1200  # 1040
 
 if __name__ == "__main__":
-    from skimage.segmentation import watershed
-    from math import hypot
-    import pandas as pd
-    import numpy as np
-
-    from tqdm import tqdm
-    import cv2
-
-    from keras.models import load_model
-    from evaluation_utils import *
-    from kneed import KneeLocator
-
     model_name = "{}.h5".format(args.model_name)
-    model_path = "{}/model_results/{}".format(repo_path, model_name)
-    save_path = repo_path / args.out_folder / args.mode
+    save_path = root_path / args.out_folder
+    input_path = root_path / args.input_folder
+    threshold = args.threshold
     save_path.mkdir(parents=True, exist_ok=True)
-    save_path.chmod(16886)  # chmod 776
-    text = "\nReading images from: {}".format(str(IMG_PATH))
-    print("#" * len(text))
-    print(text)
-    print("Output folder set to: {}\n".format(str(save_path)))
 
-    print("#" * len(text))
-    print(f"\nModel: {model_name}\n\n")
-    WeightedLoss = create_weighted_binary_crossentropy(1, 1.5)
-    model = load_model(model_path, custom_objects={'mean_iou': mean_iou, 'dice_coef': dice_coef,
-                                                   'weighted_binary_crossentropy': WeightedLoss})  # , compile=False)
+    print(f"Reading images from: {input_path}")
+    print(f"Output folder set to: {save_path}")
+    print(f"Threshold set to: {threshold}")
+
+    WeightedLoss = evaluation_utils.create_weighted_binary_crossentropy(1, 1.5)
+    model = keras.models.load_model(model_name, custom_objects={'mean_iou': evaluation_utils.mean_iou,
+                                                                'dice_coef': evaluation_utils.dice_coef,
+                                                                'weighted_binary_crossentropy': WeightedLoss})
 
     # predict with generator
-    from keras.preprocessing.image import ImageDataGenerator
-    image_datagen = ImageDataGenerator(rescale=1. / 255)
 
-    image_generator = image_datagen.flow_from_directory(IMG_PATH.parent,
+    image_datagen = keras.preprocessing.image.ImageDataGenerator(rescale=1. / 255)
+
+    image_generator = image_datagen.flow_from_directory(input_path,
                                                         target_size=(IMG_HEIGHT, IMG_WIDTH), batch_size=args.batch_size,
                                                         color_mode="rgb", class_mode=None, shuffle=False)
     filenames = image_generator.filenames
-    nb_samples = len(filenames)
-    predict = model.predict_generator(image_generator, steps=np.ceil(nb_samples / args.batch_size))
+    predicts = model.predict_generator(image_generator, steps=np.ceil(len(filenames) / args.batch_size))
 
-    opt_thresh_path = repo_path / "results/eval" / 'metrics_{}.csv'.format(args.model_name)
-    df = pd.read_csv(opt_thresh_path, index_col='Threshold')
-    if args.threshold == 'best':
-        threshold_seq = [df.F1.idxmax()]
-    elif args.threshold == 'knee':
-        x = df.index
-        y = df.F1
-        kn = KneeLocator(x, y, curve='concave', direction='decreasing')
-        threshold_seq = [kn.knee]  # df.F1.idxmax()
-    else:
-        threshold_seq = np.arange(start=0.5, stop=0.98, step=0.025)
+    for full_path, pred_im in tqdm(zip(filenames, predicts), total=len(filenames)):
+        # TODO: put in separate function
+        filename = Path(full_path).stem
+        path = save_path / Path(full_path).parent
+        path = path.parent / (path.name + f"_threshold={threshold}")
+        path.mkdir(parents=True, exist_ok=True)
 
-    metrics_df_validation_rgb = pd.DataFrame(None, columns=["F1", "MAE", "MedAE", "MPE", "accuracy",
-                                                            "precision", "recall"])
+        pred_mask = evaluation_utils.predict_mask_from_map(pred_im, threshold)
 
-    for _, threshold in tqdm(enumerate(threshold_seq), total=len(threshold_seq)):
+        orig_im = cv2.resize(cv2.imread(str(input_path / full_path), cv2.IMREAD_COLOR), (IMG_WIDTH, IMG_HEIGHT))
+        contours, _ = cv2.findContours(pred_mask, cv2.RETR_LIST, cv2.CHAIN_APPROX_NONE)
+        num_contours = len(contours)
+        joined_im = cv2.drawContours(orig_im, contours, -1, (0, 255, 0), 3)
 
-        print(f"Running for threshold: {threshold:.3f}")
-        # create dataframes for storing performance measures
-        validation_metrics_rgb = pd.DataFrame(
-            columns=["TP", "FP", "FN", "Target_count", "Predicted_count"])
-        # loop on masks
-        for idx, img_path in enumerate(filenames):
-            mask_path = MASKS_PATH / img_path.split("/")[1]
-            pred_mask_rgb = predict_mask_from_map(predict[idx], threshold)
-            mask = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            compute_metrics(pred_mask_rgb, mask,
-                            validation_metrics_rgb, img_path.split("/")[1])
-        metrics_df_validation_rgb.loc[threshold] = F1Score(validation_metrics_rgb)
-    outname = save_path / 'metrics_{}.csv'.format(model_name[:-3])
-    metrics_df_validation_rgb.to_csv(outname, index=True, index_label='Threshold')
-    _ = plot_thresh_opt(metrics_df_validation_rgb, model_name, save_path)
-
+        filename_base = path / filename
+        cv2.imwrite(f"{filename_base}_pred.png", joined_im)
+        with open(f"{filename_base}_count.txt", "w") as f:
+            f.write(str(num_contours))

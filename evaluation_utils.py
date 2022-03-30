@@ -1,15 +1,15 @@
 # define auxiliary functions --> NOTE: TO CHECK REDUNDANCY WITH OTHER UTILS SCRIPTS
-from skimage.feature import peak_local_max
-from skimage.morphology import remove_small_holes, remove_small_objects, label
-from skimage.segmentation import watershed
-from scipy import ndimage
 from math import hypot
-import numpy as np
 
 import cv2
-
-from keras import backend as K
+import numpy as np
 import tensorflow as tf
+from keras import backend as K
+from scipy import ndimage
+from skimage.feature import peak_local_max
+from skimage.morphology import remove_small_holes, remove_small_objects
+from skimage.segmentation import watershed
+
 
 ### Model utils
 def mean_iou(y_true, y_pred):
@@ -23,7 +23,9 @@ def mean_iou(y_true, y_pred):
     prec.append(score)
     return K.mean(K.stack(prec), axis=0)
 
+
 smooth = 1.
+
 
 def dice_coef(y_true, y_pred):
     y_true_f = K.flatten(y_true)
@@ -31,10 +33,9 @@ def dice_coef(y_true, y_pred):
     intersection = K.sum(y_true_f * y_pred_f)
     return (2. * intersection + smooth) / (K.sum(y_true_f) + K.sum(y_pred_f) + smooth)
 
+
 def create_weighted_binary_crossentropy(zero_weight, one_weight):
-
     def weighted_binary_crossentropy(y_true, y_pred):
-
         b_ce = K.binary_crossentropy(y_true, y_pred)
 
         # Apply the weights
@@ -45,16 +46,16 @@ def create_weighted_binary_crossentropy(zero_weight, one_weight):
         return K.mean(weighted_b_ce)
 
     return weighted_binary_crossentropy
-    
+
+
 ### Post-processing utils
 def mask_post_processing(thresh_image, area_threshold=600, min_obj_size=200, max_dist=30, foot=40):
-
     # Find object in predicted image
     labels_pred, nlabels_pred = ndimage.label(thresh_image)
     processed = remove_small_holes(labels_pred, area_threshold=area_threshold, connectivity=1,
                                    in_place=False)
     processed = remove_small_objects(
-        processed, min_size=min_obj_size, connectivity=1, in_place=False)
+        processed, min_size=min_obj_size, connectivity=1)
     labels_bool = processed.astype(bool)
 
     distance = ndimage.distance_transform_edt(processed)
@@ -65,38 +66,37 @@ def mask_post_processing(thresh_image, area_threshold=600, min_obj_size=200, max
                                 labels=labels_bool)
 
     local_maxi = remove_small_objects(
-        local_maxi, min_size=25, connectivity=1, in_place=False)
+        local_maxi, min_size=25, connectivity=1)
     markers = ndimage.label(local_maxi)[0]
     labels = watershed(-distance, markers, mask=labels_bool,
                        compactness=1, watershed_line=True)
 
-    return(labels.astype("uint8")*255)
+    return labels.astype("uint8") * 255
+
 
 ### Evaluation utils
 def predict_mask_from_img(img_path, threshold, model, colorspace="rgb"):
-
     # read input image
     img = cv2.imread(str(img_path), cv2.IMREAD_COLOR)
     img = cv2.cvtColor(img, cv2.COLOR_BGR2RGB)
     img = np.expand_dims(img, 0)
 
     # compute prediction
-    predicted_map = model.predict(img/255.)
-
-    # threshold the predicted heatmap
-    thresh_image = np.squeeze((predicted_map > threshold).astype('uint8'))
-    thresh_image = mask_post_processing(thresh_image)
-
-    return(thresh_image)
-
-
-def predict_mask_from_map(predicted_map, threshold):
+    predicted_map = model.predict(img / 255.)
 
     # threshold the predicted heatmap
     thresh_image = np.squeeze((predicted_map > threshold).astype('uint8'))
     thresh_image = mask_post_processing(thresh_image)
 
     return (thresh_image)
+
+
+def predict_mask_from_map(predicted_map, threshold):
+    # threshold the predicted heatmap
+    thresh_image = np.squeeze((predicted_map > threshold).astype('uint8'))
+    thresh_image = mask_post_processing(thresh_image)
+
+    return thresh_image
 
 
 def compute_metrics(pred_mask_binary, mask, metrics, img_name):
@@ -107,8 +107,8 @@ def compute_metrics(pred_mask_binary, mask, metrics, img_name):
     # compute centers of predicted objects
     pred_centers = []
     for ob in pred_objs:
-        pred_centers.append(((int((ob[0].stop - ob[0].start)/2)+ob[0].start),
-                             (int((ob[1].stop - ob[1].start)/2)+ob[1].start)))
+        pred_centers.append(((int((ob[0].stop - ob[0].start) / 2) + ob[0].start),
+                             (int((ob[1].stop - ob[1].start) / 2) + ob[1].start)))
 
     # extract target objects and counts
     targ_label, targ_count = ndimage.label(mask)
@@ -116,9 +116,10 @@ def compute_metrics(pred_mask_binary, mask, metrics, img_name):
 
     # compute centers of target objects
     targ_center = []
+    print(targ_objs)
     for ob in targ_objs:
-        targ_center.append(((int((ob[0].stop - ob[0].start)/2)+ob[0].start),
-                            (int((ob[1].stop - ob[1].start)/2)+ob[1].start)))
+        targ_center.append(((int((ob[0].stop - ob[0].start) / 2) + ob[0].start),
+                            (int((ob[1].stop - ob[1].start) / 2) + ob[1].start)))
 
     # associate matching objects, true positives
     tp = 0
@@ -130,11 +131,10 @@ def compute_metrics(pred_mask_binary, mask, metrics, img_name):
 
         for targ_idx, targ_obj in enumerate(targ_objs):
 
-            dist = hypot(pred_centers[pred_idx][0]-targ_center[targ_idx][0],
-                         pred_centers[pred_idx][1]-targ_center[targ_idx][1])
+            dist = hypot(pred_centers[pred_idx][0] - targ_center[targ_idx][0],
+                         pred_centers[pred_idx][1] - targ_center[targ_idx][1])
 
             if dist < min_dist:
-
                 TP_flag = 1
                 min_dist = dist
                 index = targ_idx
@@ -153,7 +153,7 @@ def compute_metrics(pred_mask_binary, mask, metrics, img_name):
     # update metrics dataframe
     metrics.loc[img_name] = [tp, fp, fn, targ_count, pred_count]
 
-    return(metrics)
+    return (metrics)
 
 
 def F1Score(metrics):
@@ -163,18 +163,19 @@ def F1Score(metrics):
     tot_fn_test = metrics["FN"].sum()
     tot_abs_diff = abs(metrics["Target_count"] - metrics["Predicted_count"])
     tot_perc_diff = (metrics["Predicted_count"] -
-                     metrics["Target_count"])/(metrics["Target_count"]+10**(-6))
-    accuracy = (tot_tp_test + 0.001)/(tot_tp_test +
-                                      tot_fp_test + tot_fn_test + 0.001)
-    precision = (tot_tp_test + 0.001)/(tot_tp_test + tot_fp_test + 0.001)
-    recall = (tot_tp_test + 0.001)/(tot_tp_test + tot_fn_test + 0.001)
-    F1_score = 2*precision*recall/(precision + recall)
+                     metrics["Target_count"]) / (metrics["Target_count"] + 10 ** (-6))
+    accuracy = (tot_tp_test + 0.001) / (tot_tp_test +
+                                        tot_fp_test + tot_fn_test + 0.001)
+    precision = (tot_tp_test + 0.001) / (tot_tp_test + tot_fp_test + 0.001)
+    recall = (tot_tp_test + 0.001) / (tot_tp_test + tot_fn_test + 0.001)
+    F1_score = 2 * precision * recall / (precision + recall)
     MAE = tot_abs_diff.mean()
     MedAE = tot_abs_diff.median()
     MPE = tot_perc_diff.mean()
 
-    return(F1_score, MAE, MedAE, MPE, accuracy, precision, recall)  
-    
+    return (F1_score, MAE, MedAE, MPE, accuracy, precision, recall)
+
+
 ### Plotting utils
 def plot_thresh_opt(df, model_name, save_path=None):
     import matplotlib
@@ -182,11 +183,11 @@ def plot_thresh_opt(df, model_name, save_path=None):
     from matplotlib import pyplot as plt
 
     line = df.plot(y="F1", linewidth=2, markersize=6, legend=False),
-    line = plt.title('$F_1$ score: threshold optimization', size =18, weight='bold')
+    line = plt.title('$F_1$ score: threshold optimization', size=18, weight='bold')
     line = plt.ylabel('$F_1$ score', size=15)
-    line = plt.xlabel('Threshold', size=15 )
+    line = plt.xlabel('Threshold', size=15)
     line = plt.axvline(df.F1.idxmax(), color='firebrick', linestyle='--')
     if save_path:
         outname = save_path / 'f1_score_thresh_opt_{}.png'.format(model_name[:-3])
-        _ = plt.savefig(outname, dpi = 900, bbox_inches='tight' )
+        _ = plt.savefig(outname, dpi=900, bbox_inches='tight')
     return line
